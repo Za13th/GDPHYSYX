@@ -1,8 +1,11 @@
+#pragma once
 #include "GDPHYSX.h"
 
 using namespace physics;
 
 MyVector::MyVector() : x(0),y(0),z(0){}
+
+MyVector::MyVector(const float a) : x(a), y(a), z(a) {}
 
 MyVector::MyVector(const float _x, const float _y, const float _z): x(_x),y(_y),z(_z) {}
 
@@ -75,7 +78,7 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
         this->y = -350; //near bottm of the screen
         this->z = 0;
         this->scale = rand() % 9 + 2; //2 - 10
-
+        this->restitution = 1.f;
         this->model = model;
 
         //generally upwards velocity with the possibilty to make it also go forwards/backward and left/right
@@ -100,7 +103,8 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
     this->x = xyz.x;
     this->y = xyz.y;
     this->z = xyz.z;
-    this->scale = 10;
+    this->scale = 50;
+    this->radius = scale;
 
     this->model = model;
 
@@ -108,16 +112,20 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
     this->accel = a;
     this->color = c;
 
+    this->restitution = 0.9f;
     this->damping = 0.9f;
     this->accumulatedForce = MyVector(0, 0, 0);
-    this->mass = 10;
+    this->mass = 50;
     this->lifespan = 1000;
 
 
     this->count = 0;
 }
+
+
     void Particle::update(float time)
       {
+          this->radius = scale;
 
           //update position
           this->x += velocity.x * time + (0.5f * this->accel.x * time * time);
@@ -131,12 +139,12 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
 
           this->ResetForce();
 
-          count++;
-          if (count >= 60) //assumes program is being run 60 frames per second
+          //count++;
+          /*if (count >= 60) //assumes program is being run 60 frames per second
           {
               count = 0; //every 60 frames (or one second), decrease the lifespan by one
               this->lifespan--;
-          }
+          }*/
 
       }
     bool Particle::destroy()
@@ -193,18 +201,140 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
       }
     void Particle::ResetForce()
       { //set force to zero
-          this->accumulatedForce *= 0;
-          this->accel *= 0;
+          this->accumulatedForce = MyVector(0,0,0);
+          this->accel = MyVector(0, 0, 0);
       }
     MyVector Particle::getPos() //gets the entity's position
       {
           return MyVector(this->x, this->y, this->z);
       }
+    void Particle::setPos(float x,float y, float z) 
+    {
+        this->x = x;
+        this->y = y;
+        this->z = z;
+    }
+    void Particle::setPos(MyVector xyz)
+    {
+        this->x = xyz.x;
+        this->y = xyz.y;
+        this->z = xyz.z;
+    }
     void Particle::cleanUp() //calls the models clean up function to delete its VAO and VBO
       {
           this->model->cleanUp();
       }
 
+    void ParticleContact::Resolve(float time)
+    { //calls the two functions below the next one
+        this->ResolveVelocity(time);
+        this->ResolveInterpenetration(time);
+
+    }
+    float ParticleContact::GetSeparatingSpeed()
+    {
+        MyVector velocity = particles[0]->velocity;
+
+        if (particles[1])
+            velocity -= particles[1]->velocity;
+
+        return dotProduct(velocity, contactNormal);
+    }
+    void ParticleContact::ResolveVelocity(float time)
+    {//get the new velocity of particles after collsion
+        float separatingSpeed = this->GetSeparatingSpeed();
+
+        if (separatingSpeed > 0)
+            return;
+
+        float newSS = -restitution * separatingSpeed;
+        float deltaSpeed = newSS - separatingSpeed;
+
+        float totalMass = 1.0f / particles[0]->mass;
+        if (particles[1])
+            totalMass += 1.0f / particles[1]->mass;
+
+        if (totalMass <= 0)
+            return;
+
+        //assuming non-positive separating speeds and positive masses
+        //calculates for the new velocities to be applied to the particle/s
+        float impulse_mag = deltaSpeed / totalMass;
+        MyVector Impulse = contactNormal * impulse_mag;
+
+        MyVector V_a = Impulse * ((float)1 / particles[0]->mass);
+        particles[0]->velocity += V_a;
+
+        if (particles[1])
+        {
+            MyVector V_b = Impulse * ((float)-+1 / particles[1]->mass);
+            particles[1]->velocity += V_b;
+        }
+
+
+    }
+    void ParticleContact::ResolveInterpenetration(float time)
+    { //moves particles apart so they are merely touching rather than inside eacch othe
+        if (depth <= 0)
+            return;
+
+        float totalMass = 1.0f / particles[0]->mass;
+        if (particles[1])
+            totalMass += 1.0f / particles[1]->mass;
+
+        if (totalMass <= 0.0f)
+            return;
+        //assuming the particles are of valid mass and actually inside each other,
+        //moves the particles so only their circumferences are touching, based on the position they were initially in
+        float totalMoveByMass = depth / totalMass;
+        MyVector moveByMass = contactNormal * totalMoveByMass;
+
+        MyVector P_a = moveByMass * 1.0f / particles[0]->mass;
+
+        particles[0]->x += P_a.x;
+        particles[0]->y += P_a.y;
+        particles[0]->z += P_a.z;
+
+        if (particles[1])
+        {
+            MyVector P_b = moveByMass * -1.0f / particles[1]->mass;
+
+            particles[1]->x += P_b.x;
+            particles[1]->y += P_b.y;
+            particles[1]->z += P_b.z;
+        }
+
+        depth = 0;//resets depth to 0
+
+    }
+
+    void ContactResolver::ResolveContacts(std::vector<ParticleContact*> contacts, float time)
+    {
+
+        for (int i = 0; i < contacts.size(); i++)
+        {
+            int k = i;
+
+            for (int j = 0; j < contacts.size() - 1 && contacts.at(j + 1)->depth <= 0; j++)
+            {//get the unresolved contact with the highest separating speed
+                if (contacts.at(j)->GetSeparatingSpeed() > contacts.at(j + 1)->GetSeparatingSpeed()
+                    || contacts.at(j + 1)->depth > 0)
+                {
+                    k = j + 1;
+                }
+
+            }
+
+            
+            //if all contacts have a positive separating speed and negative depth, done
+            if (contacts[k]->GetSeparatingSpeed() >= 0 && contacts[k]->depth <= 0)
+                return;
+
+            //else resolve the current contact, and repeat
+            contacts[k]->Resolve(time);
+        }
+
+    }
 
     void ForceGenerator::UpdateForce(Particle* p, float time)
     { //placeholder for the class' children
@@ -241,6 +371,73 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
         p->AddForce(dir * -dragF);
     }
 
+    void AnchoredSpring::UpdateForce(Particle* p, float time)
+    {
+        auto pos = p->getPos();
+        auto force = pos - this->anchorPoint;
+
+        float mag = force.Magnitude();
+
+        float springForce = -springConstant * abs(mag - this->restLength);
+
+        force = force.Direction();
+        force = force * springForce;
+        //adds a force to the particle depending on how far it is from the anchored point
+        p->AddForce(force);
+    }
+    
+    void ParticleSpring::UpdateForce(Particle* p, float time)
+    {
+        auto pos = p->getPos();
+        auto force = (pos - this->otherParticle->getPos());
+
+        float mag = force.Magnitude();
+
+        float springForce = -springConstant * abs(mag - restLength);
+
+        force = force.Direction();
+        force = force * springForce;
+        //adds a force to the particle depending on how far it is from the other particle
+        p->AddForce(force);
+    }
+
+    float ParticleLink::CurrentLength()
+    {
+        MyVector ret = particles[0]->getPos() - particles[1]->getPos();
+
+        return ret.Magnitude();
+    }
+
+    ParticleContact* Rod::GetContact()
+    {
+        float currLen = this->CurrentLength();
+
+        if (currLen == this->length)//if the distance between the two particles is equal to the length dicated
+            return nullptr; //do nothing
+
+        //else, generate a contact that will fix this problem when resolved
+        ParticleContact* ret = new ParticleContact();
+        ret->particles[0] = particles[0];
+        ret->particles[1] = particles[1];
+        auto dir = particles[1]->getPos() - particles[0]->getPos();
+        dir = dir.Direction();
+
+        if (currLen > this->length)
+        {
+            ret->contactNormal = dir;
+            ret->depth = currLen - length;
+        }
+        else
+        {
+            ret->contactNormal = dir * -1;
+            ret->depth = length - currLen;
+        }
+
+        ret->restitution = 0;
+
+        return ret;
+    }
+
     void ForceRegistry::Add(Particle* particle, ForceGenerator* generator)
     {
         ParticleForceRegistry toAdd;
@@ -266,12 +463,46 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
         
     }
 
+    void RenderLine::Update(MyVector _p1, MyVector _p2)
+    {
+        p1 = _p1;
+        p2 = _p2;
+    }
+        
+    void RenderLine::Draw(glm::mat4 projectionMatrix)
+    {
+        glUseProgram(0);
+
+        glm::vec4 d1 = projectionMatrix * glm::vec4(p1.x, p1.y, p1.z, 1.0f);
+        glm::vec4 d2 = projectionMatrix * glm::vec4(p2.x, p2.y, p2.z, 1.0f);
+
+        glBegin(GL_LINES);
+        glVertex3f(d1.x, d1.y,d1.z);
+        glVertex3f(d2.x, d2.y, d2.z);
+        glEnd();
+    }
     PhysicsWorld::PhysicsWorld() = default;
+    PhysicsWorld::PhysicsWorld(float gravityForce)
+    {
+        this->Gravity = MyVector(0, gravityForce, 0);
+    }
     PhysicsWorld::PhysicsWorld(Model * m, DragForceGenerator * d) : model(m), drag(d) {}
     void PhysicsWorld::AddParticle(Particle * toAdd)
     {   //adds partrticles to the world and applies gravity
         this->Particles.push_back(toAdd);
         forceRegistry.Add(toAdd, &Gravity);
+    }
+    void PhysicsWorld::AddContact(Particle* p1, Particle* p2, float restitution, MyVector contactNormal,float depth)
+    {
+        auto newContact = new ParticleContact();
+
+        newContact->particles[0] = p1;
+        newContact->particles[1] = p2;
+        newContact->restitution = restitution;
+        newContact->contactNormal = contactNormal;
+        newContact->depth = depth;
+
+        this->Contacts.push_back(newContact);
     }
     void PhysicsWorld::Draw(GLuint * shaderProg, Camera * cam)
     {
@@ -290,6 +521,42 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
         for (std::list<Particle*>::iterator p = Particles.begin(); p != Particles.end(); p++)
         {
             (*p)->update(Time);
+        }
+
+        this->GenerateContacts();//gets contacts and resolves them
+        if (Contacts.size() > 0)
+        {
+            Resolver.ResolveContacts(this->Contacts,Time);
+        }
+    }
+    void PhysicsWorld::GetOverlaps()
+    {
+        for (int i = 0; i < Particles.size(); i++)
+        {
+            std::list<Particle*>::iterator a = std::next(Particles.begin(), i);
+            for (int h = i + 1; h < Particles.size(); h++)
+            {
+                std::list<Particle*>::iterator b = std::next(Particles.begin(), h);
+
+                MyVector mag2Vector = (*a)->getPos() - (*b)->getPos();
+
+                float mag2 = (mag2Vector.x * mag2Vector.x) + (mag2Vector.y * mag2Vector.y) + (mag2Vector.z * mag2Vector.z);
+
+                float rad = (*a)->radius + (*b)->radius;
+
+                float rad2 = rad * rad;
+                    
+                if (mag2 <= rad2) // if the distance beteen the two particles is bigger than the sum of their radii
+                {
+                    auto dir = mag2Vector.Direction();
+
+                    float r = rad2 - mag2;
+                    float depth = sqrt(r);
+
+                    float restitution = fmin((*a)->restitution, (*b)->restitution);
+                    AddContact(*a, *b, restitution, dir, depth);//adds a contact to be resolved
+                }
+            }
         }
     }
     void PhysicsWorld::UpdateParticleList()
@@ -314,4 +581,20 @@ MyVector physics::crossProduct(MyVector A, MyVector B)
 
 
         }
+    void PhysicsWorld::GenerateContacts()
+    {
+        Contacts.clear(); //clears all previous contacts
+        GetOverlaps(); //checks for overlapping particles
+        for (std::list<ParticleLink*>::iterator i = Links.begin(); i!=Links.end();i++)
+        {
+            ParticleContact* contact = (*i)->GetContact();
+
+            if (contact != nullptr)//if there are contacts to be resolved, they will be resolved by the contact resolver later
+            {
+                Contacts.push_back(contact);
+            }
+        }
+    }
+
+
 

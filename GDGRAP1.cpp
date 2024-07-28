@@ -319,12 +319,12 @@ public:
         cameraPos = glm::vec3(0.0, 0.0f, 800.0f);//moves the camera into place
         Center = glm::vec3(0.0f, 0, 0.0f);
 
-        this->FOV = 53.5f;
+        this->FOV = 53.4f;
         this->width = width;
         this->height = height;
         this->near = 0.1f;
         this->far = 2800.f;
-        this->distance = 800;
+        this->distance = cameraPos.z;
     }
     
     
